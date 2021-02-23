@@ -5,7 +5,8 @@ from mock import Mock, MagicMock, PropertyMock
 from .constants import *
 from .exceptions import *
 from .utils import (
-    matches, merge, intersect, get_attribute, validate_mock_set, is_list_like_iter, flatten_list, truncate, hash_dict
+    matches, merge, intersect, get_attribute, validate_mock_set, is_list_like_iter, flatten_list, truncate,
+    hash_dict, filter_results
 )
 
 
@@ -79,33 +80,11 @@ class MockSet(MagicMock):
             self.items.append(model)
             self.fire(model, self.EVENT_ADDED, self.EVENT_SAVED)
 
-    def _filter_single_q(self, source, q_obj, negated):
-        if isinstance(q_obj, DjangoQ):
-            return self._filter_q(source, q_obj)
-        else:
-            return matches(negated=negated, *source, **{q_obj[0]: q_obj[1]})
-
-    def _filter_q(self, source, query):
-        results = []
-
-        for child in query.children:
-            filtered = self._filter_single_q(source, child, query.negated)
-
-            if filtered:
-                if not results or query.connector == CONNECTORS_OR:
-                    results = merge(results, filtered)
-                else:
-                    results = intersect(results, filtered)
-            elif query.connector == CONNECTORS_AND:
-                return []
-
-        return results
-
     def filter(self, *args, **attrs):
         results = list(self.items)
         for x in args:
             if isinstance(x, DjangoQ):
-                results = self._filter_q(results, x)
+                results = filter_results(results, x)
             else:
                 raise ArgumentNotSupported()
         return MockSet(*matches(*results, **attrs), clone=self)
@@ -117,6 +96,24 @@ class MockSet(MagicMock):
 
     def exists(self):
         return len(self.items) > 0
+
+    def in_bulk(self, id_list=None, *, field_name='pk'):
+        result = {}
+        for model in self.items:
+            if id_list is None or model.pk in id_list:
+                result[getattr(model, field_name)] = model
+        return result
+
+    def annotate(self, **kwargs):
+        results = list(self.items)
+        for key, value in kwargs.items():
+            for row in results:
+                if not hasattr(row, '_annotated_fields'):
+                    row._annotated_fields = []
+                row._annotated_fields.append(key)
+                setattr(row, key, get_attribute(row, value)[0])
+
+        return MockSet(*results, clone=self)
 
     def aggregate(self, *args, **kwargs):
         result = {}
